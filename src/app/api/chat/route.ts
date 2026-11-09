@@ -1,6 +1,12 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { ChatApiRequest, GeoLocation } from '@/lib/types';
-import { extractLocationQuery, getLastLocationFromHistory, generateWeatherChatResponse } from '@/lib/gemini';
+import { ChatApiRequest, GeoLocation, WeatherData } from '@/lib/types';
+import {
+  extractLocationQuery,
+  extractComparisonLocations,
+  getLastLocationFromHistory,
+  isPureGreetingOrCasual,
+  generateWeatherChatResponse,
+} from '@/lib/gemini';
 import { resolveLocation } from '@/lib/geocoding';
 import { fetchWeatherData } from '@/lib/weather';
 
@@ -18,7 +24,7 @@ export async function POST(req: NextRequest) {
       );
     }
 
-    // Default location from client context or safe fallback
+    // Default location from client context or safe Indian fallback
     let targetLocation: GeoLocation = {
       name: locationContext?.name || 'New Delhi',
       country: locationContext?.country || 'India',
@@ -32,74 +38,96 @@ export async function POST(req: NextRequest) {
       timezone: 'Asia/Kolkata',
     };
 
-    // 1. Detect if the user specified a new location in their message
-    const extractedLocationStr = extractLocationQuery(message, history);
+    let secondaryWeatherData: WeatherData | null = null;
 
-    if (extractedLocationStr) {
-      const { matched, ambiguous, alternatives } = await resolveLocation(extractedLocationStr);
+    // 1. Detect if the user is comparing two cities (e.g. "Which is hotter: Pune or Mumbai?")
+    const comparison = extractComparisonLocations(message, history);
 
-      if (ambiguous && alternatives && alternatives.length > 1) {
-        const optionsList = alternatives
-          .map((alt) => `• **${alt.name}** (${alt.admin1 ? alt.admin1 + ', ' : ''}${alt.country})`)
-          .join('\n');
+    if (comparison.isComparison && comparison.primaryCity && comparison.secondaryCity) {
+      const [res1, res2] = await Promise.all([
+        resolveLocation(comparison.primaryCity),
+        resolveLocation(comparison.secondaryCity),
+      ]);
 
-        const clarifyReply =
-          language === 'hi'
-            ? `आप कौन सा स्थान जानना चाहते हैं? मुझे "${extractedLocationStr}" नाम से एक से अधिक स्थान मिले:\n\n${optionsList}\n\nकृपया शहर और राज्य या देश स्पष्ट करें।`
-            : language === 'mr'
-            ? `तुम्हाला कोणते ठिकाण अभिप्रेत आहे? मला "${extractedLocationStr}" नावाची एकापेक्षा जास्त ठिकाणे आढळली:\n\n${optionsList}\n\nकृपया शहर आणि राज्य किंवा देश स्पष्ट करा.`
-            : `Which location do you mean? I found multiple places named "${extractedLocationStr}":\n\n${optionsList}\n\nPlease specify the city and country or state.`;
-
-        return NextResponse.json({
-          reply: clarifyReply,
-          followUps: alternatives.slice(0, 3).map((a) => `Weather in ${a.name}, ${a.country}`),
-          location: targetLocation,
-        });
+      if (res1.matched && res2.matched) {
+        targetLocation = res1.matched;
+        try {
+          secondaryWeatherData = await fetchWeatherData(res2.matched);
+        } catch (e) {
+          console.warn('Failed to fetch secondary weather for comparison:', e);
+        }
+      } else if (res1.matched) {
+        targetLocation = res1.matched;
       }
+    } else {
+      // 2. Single city detection from user message (skip for pure greetings / casual pleasantries)
+      const isCasual = isPureGreetingOrCasual(message);
+      const extractedLocationStr = isCasual ? null : extractLocationQuery(message, history);
 
-      if (matched) {
-        targetLocation = matched;
-      } else {
-        if (extractedLocationStr.length >= 2) {
+      if (extractedLocationStr) {
+        const { matched, ambiguous, alternatives } = await resolveLocation(extractedLocationStr);
+
+        if (ambiguous && alternatives && alternatives.length > 1) {
+          const optionsList = alternatives
+            .map((alt) => `• **${alt.name}** (${alt.admin1 ? alt.admin1 + ', ' : ''}${alt.country})`)
+            .join('\n');
+
+          const clarifyReply =
+            language === 'hi'
+              ? `आप कौन सा स्थान जानना चाहते हैं? मुझे "${extractedLocationStr}" नाम से एक से अधिक स्थान मिले:\n\n${optionsList}\n\nकृपया शहर और राज्य या देश स्पष्ट करें।`
+              : language === 'mr'
+              ? `तुम्हाला कोणते ठिकाण अभिप्रेत आहे? मला "${extractedLocationStr}" नावाची एकापेक्षा जास्त ठिकाणे आढळली:\n\n${optionsList}\n\nकृपया शहर आणि राज्य किंवा देश स्पष्ट करा.`
+              : `Which location do you mean? I found multiple places named "${extractedLocationStr}":\n\n${optionsList}\n\nPlease specify the city and state or country.`;
+
+          return NextResponse.json({
+            reply: clarifyReply,
+            followUps: alternatives.slice(0, 3).map((a) => `Weather in ${a.name}, ${a.country}`),
+            location: targetLocation,
+          });
+        }
+
+        if (matched) {
+          targetLocation = matched;
+        } else if (extractedLocationStr.length >= 2) {
           const notFoundReply =
             language === 'hi'
-              ? `मुझे "${extractedLocationStr}" स्थान नहीं मिला। क्या आप कृपया शहर और राज्य या देश का नाम बता सकते हैं?`
+              ? `मुझे "${extractedLocationStr}" स्थान नहीं मिला। क्या आप कृपया सही शहर या जिले का नाम बता सकते हैं?`
               : language === 'mr'
-              ? `मला "${extractedLocationStr}" हे ठिकाण सापडले नाही. कृपया आपण शहर आणि राज्य किंवा देश सांगू शकता का?`
-              : `I couldn't find the location "${extractedLocationStr}". Could you please give me the city and country?`;
+              ? `मला "${extractedLocationStr}" हे ठिकाण सापडले नाही. कृपया आपण योग्य शहर किंवा जिल्ह्याचे नाव सांगू शकता का?`
+              : `I couldn't find the location "${extractedLocationStr}". Could you please check the spelling or provide the city and state?`;
 
           return NextResponse.json({
             reply: notFoundReply,
             followUps: [
               language === 'hi' ? 'नई दिल्ली में मौसम' : language === 'mr' ? 'नवी दिल्लीत हवामान' : 'Weather in New Delhi',
               language === 'hi' ? 'मुंबई में मौसम' : language === 'mr' ? 'मुंबईत हवामान' : 'Weather in Mumbai',
-              language === 'hi' ? 'जयपुर में मौसम' : language === 'mr' ? 'पुण्यात हवामान' : 'Weather in Jaipur',
+              language === 'hi' ? 'पुणे में मौसम' : language === 'mr' ? 'पुण्यात हवामान' : 'Weather in Pune',
             ],
             location: targetLocation,
           });
         }
-      }
-    } else if (!locationContext || !locationContext.name || locationContext.name === 'New Delhi') {
-      // If user did not specify a new location, but history contains a previously resolved city,
-      // recover that location from history context:
-      const priorCity = getLastLocationFromHistory(history);
-      if (priorCity && priorCity !== targetLocation.name) {
-        const { matched } = await resolveLocation(priorCity);
-        if (matched) {
-          targetLocation = matched;
+      } else if (!locationContext || !locationContext.name || locationContext.name === 'New Delhi') {
+        // If user did not specify a new location, recover the last discussed city from conversation history
+        const priorCity = getLastLocationFromHistory(history);
+        if (priorCity && priorCity.toLowerCase() !== targetLocation.name.toLowerCase()) {
+          const { matched } = await resolveLocation(priorCity);
+          if (matched) {
+            targetLocation = matched;
+          }
         }
       }
     }
 
-    // 2. Fetch real weather data from Open-Meteo
+    // 3. Fetch verified real weather data from Open-Meteo
     const weatherData = await fetchWeatherData(targetLocation);
 
-    // 3. Generate grounded AI response with Gemini
+    // 4. Generate grounded, natural, conversational response with Gemini
     const aiResponse = await generateWeatherChatResponse({
       userMessage: message,
       history,
       weatherData,
       language,
+      secondaryWeatherData,
     });
 
     return NextResponse.json(aiResponse);
@@ -107,8 +135,7 @@ export async function POST(req: NextRequest) {
     console.error('Chat API error:', error);
     return NextResponse.json(
       {
-        reply: "I couldn't retrieve the latest weather right now. Please check your network connection and try again in a moment.",
-        error: error?.message || 'Server error',
+        reply: "I'm having a little trouble retrieving the latest weather right now. Please check your network connection and try again in a moment!",
       },
       { status: 500 }
     );

@@ -15,6 +15,7 @@ import {
   Play,
   Square,
   Volume2,
+  RotateCcw,
 } from 'lucide-react';
 import { ChatMessage, GeoLocation } from '@/lib/types';
 import { WeatherSummaryCard } from './WeatherSummaryCard';
@@ -104,6 +105,8 @@ export const AskWeatherGPTView: React.FC<AskWeatherGPTViewProps> = ({
   const gnaniTtsRequestRef = useRef<AbortController | null>(null);
   const gnaniTtsTextRef = useRef<string>('');
   const gnaniTtsLanguageRef = useRef<string>('');
+  const isSubmittingRef = useRef<boolean>(false);
+  const lastUserQueryRef = useRef<string>('');
 
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
@@ -457,8 +460,10 @@ export const AskWeatherGPTView: React.FC<AskWeatherGPTViewProps> = ({
   // Text message sender (preserves existing text chat behavior exactly)
   const sendMessage = async (textToSend: string, options: { speakWithGnani?: boolean } = {}) => {
     const trimmed = textToSend.trim();
-    if (!trimmed || loading) return;
+    if (!trimmed || loading || isSubmittingRef.current) return;
 
+    isSubmittingRef.current = true;
+    lastUserQueryRef.current = trimmed;
     stopGnaniSpeech();
 
     // If voice was active, stop voice before sending text
@@ -556,6 +561,7 @@ export const AskWeatherGPTView: React.FC<AskWeatherGPTViewProps> = ({
       };
       syncToActiveConversation([...newHistory, errorMsg]);
     } finally {
+      isSubmittingRef.current = false;
       setLoading(false);
     }
   };
@@ -920,6 +926,20 @@ export const AskWeatherGPTView: React.FC<AskWeatherGPTViewProps> = ({
                 <div className="text-sm leading-relaxed prose dark:prose-invert max-w-none">
                   <ReactMarkdown>{msg.content}</ReactMarkdown>
                 </div>
+
+                {msg.isError && (
+                  <div className="pt-1 flex items-center gap-2">
+                    <button
+                      type="button"
+                      onClick={() => sendMessage(lastUserQueryRef.current || 'Try again')}
+                      disabled={loading}
+                      className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-xs font-semibold bg-rose-600 hover:bg-rose-700 text-white shadow-xs transition-all disabled:opacity-50"
+                    >
+                      <RotateCcw className="h-3.5 w-3.5" />
+                      <span>{language === 'mr' ? 'पुन्हा प्रयत्न करा' : language === 'hi' ? 'पुनः प्रयास करें' : 'Retry'}</span>
+                    </button>
+                  </div>
+                )}
 
                 {msg.followUps && msg.followUps.length > 0 && (
                   <div className="mt-3 pt-3 border-t border-slate-100 dark:border-slate-800 flex flex-wrap gap-2">

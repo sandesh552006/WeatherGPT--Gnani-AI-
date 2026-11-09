@@ -614,19 +614,21 @@ export function findIndianLocation(
   if (CITY_LOOKUP.has(firstToken)) return CITY_LOOKUP.get(firstToken)!;
   if (ALIAS_LOOKUP.has(firstToken)) return ALIAS_LOOKUP.get(firstToken)!;
 
-  // Substring / prefix matching across Indian cities
-  for (let i = 0; i < INDIAN_CITIES.length; i++) {
-    const entry = INDIAN_CITIES[i];
-    const matchesName = Object.values(entry.name).some(
-      (val) => val && (clean.includes(val.toLowerCase()) || val.toLowerCase().includes(clean))
-    );
-    if (matchesName) {
-      return entry;
-    }
-    for (let j = 0; j < entry.aliases.length; j++) {
-      const alias = entry.aliases[j].toLowerCase();
-      if (clean.includes(alias) || alias.includes(clean)) {
+  // Substring / prefix matching across Indian cities (only for tokens >= 4 chars to avoid false positives on short words)
+  if (clean.length >= 4) {
+    for (let i = 0; i < INDIAN_CITIES.length; i++) {
+      const entry = INDIAN_CITIES[i];
+      const matchesName = Object.values(entry.name).some(
+        (val) => val && (clean.includes(val.toLowerCase()) || val.toLowerCase().startsWith(clean))
+      );
+      if (matchesName) {
         return entry;
+      }
+      for (let j = 0; j < entry.aliases.length; j++) {
+        const alias = entry.aliases[j].toLowerCase();
+        if (clean.includes(alias) || alias.startsWith(clean)) {
+          return entry;
+        }
       }
     }
   }
